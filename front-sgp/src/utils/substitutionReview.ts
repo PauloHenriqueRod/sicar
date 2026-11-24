@@ -1,0 +1,5 @@
+export const emptyFunctionComponent = () => ({ componente: '', percentual_utilizado: '', origem: '' });
+export const emptyFunction = () => ({ tipo_funcao: '', codigo_funcao: '', modalidade: '', componentes: [emptyFunctionComponent()] });
+export const emptySubstitutionState = () => ({ substituida: emptyFunction(), propria: { situacao: '' }, opcao: { identificador: '', versao: '', fonte: '', inicio_vigencia: '', fim_vigencia: '', calculo: '', diferenca_negativa: '', confirmada: false } });
+export const emptySourcePeriod = () => ({ id: crypto.randomUUID(), inicio: '', ultimo_dia_considerado: '', motivo: '', origem: '', localizador: '' });
+export const emptySubstitutionPlan = () => ({ periodo: { inicio: '', ultimo_dia_considerado: '' }, designacao: emptySourcePeriod(), titular_matricula: '', afastamentos_titular: [], impedimentos_substituto: [], estado_inicial: emptySubstitutionState(), eventos: [], rubrica: { rubrica: '83185', natureza_folha: '', natureza_rubrica: '' }, recebidos: [], documentos: [], data_documento: '', data_implantacao: '', conferido_pelo_rh: false });

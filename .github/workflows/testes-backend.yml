@@ -1,0 +1,71 @@
+name: Testes SICAR (Back-end)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    
+    defaults:
+      run:
+        working-directory: ./back-sgp
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: root
+          POSTGRES_DB: sgp_rh_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d sgp_rh_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Baixar o código do Repositório
+      uses: actions/checkout@v4
+
+    - name: Configurar o Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Instalar dependências
+      run: |
+        # Python 3.11 pode trazer setuptools antigo no ambiente inicial.
+        python -m pip install --upgrade pip==26.2.1 setuptools==84.1.0
+        python -m pip install -r requirements-dev.txt
+
+    - name: Auditar dependências Python
+      run: |
+        python -m venv .audit-env
+        .audit-env/bin/python -m pip install --upgrade pip==26.2.1 setuptools==84.1.0
+        .audit-env/bin/python -m pip install pip-audit==2.10.1
+        .audit-env/bin/python -m pip_audit --path "$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" --progress-spinner off
+
+    - name: Rodar testes unitários e de API (SQLite em memória)
+      env:
+        DATABASE_URL: sqlite://
+        SECRET_KEY: teste_secret_key_123
+        ADMIN_INITIAL_PASSWORD: teste_admin_password_123
+        ALLOWED_ORIGINS: http://localhost:5173
+      run: |
+        pytest tests/ -W error::DeprecationWarning -W error::PendingDeprecationWarning
+
+    - name: Rodar integração real com PostgreSQL
+      env:
+        TEST_POSTGRES_URL: postgresql://root:root@localhost:5432/sgp_rh_test
+      run: |
+        pytest integration_tests/ -q -rs

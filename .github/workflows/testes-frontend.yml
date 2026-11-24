@@ -1,0 +1,41 @@
+name: Testes SICAR (Front-end)
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./front-sgp
+
+    steps:
+    - name: Baixar o código do Repositório
+      uses: actions/checkout@v4
+
+    - name: Configurar o Node.js 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: npm
+        cache-dependency-path: front-sgp/package-lock.json
+
+    - name: Instalar dependências (npm)
+      run: npm ci
+
+    - name: Verificar vulnerabilidades conhecidas
+      run: npm audit --audit-level=low
+
+    - name: Verificação de Tipagem e Sintaxe (TypeScript)
+      run: npm run lint
+
+    - name: Testes de componentes
+      run: npm test -- --run
+
+    - name: Fazer o Build (Testar empacotamento)
+      run: npm run build

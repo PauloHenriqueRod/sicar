@@ -1,0 +1,10 @@
+{
+  "name": "tcc-sicar-root",
+  "version": "1.0.0",
+  "description": "Scripts globais para checagem de qualidade do Monorepo SICAR",
+  "scripts": {
+    "check:front": "cd front-sgp && npm run lint && npm run build && npm test -- --run",
+    "check:back": "cd back-sgp && ruff check . && mypy . && pytest",
+    "check": "npm run check:front && npm run check:back"
+  }
+}
