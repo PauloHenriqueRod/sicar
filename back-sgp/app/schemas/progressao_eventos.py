@@ -37,9 +37,25 @@ class RegraHistorica(VigenciaRegra):
 
 
 class RubricaProgressao(RubricaApuracao):
+    # Componentes internos da diferença docente não são códigos de lançamento SIAPE.
+    rubrica: str = Field(pattern=r"^(?:[0-9]{1,8}|DIF-VB|DIF-RT|DIF-ANUENIO)$")
     formula: FormulaProgressao
     regra: RegraHistorica
     apurar_principal: bool = Field(default=True, strict=True)
+
+    @field_validator("rubrica")
+    @classmethod
+    def codigo(cls, value):
+        return value if value.startswith("DIF-") else super().codigo(value)
+
+    @model_validator(mode="after")
+    def validar_componente_interno(self):
+        formulas = {"DIF-VB": "VB", "DIF-RT": "RT", "DIF-ANUENIO": "ANUENIO_SOBRE_VB"}
+        if self.rubrica in formulas and (
+            self.formula != formulas[self.rubrica] or self.natureza_rubrica != "R" or self.natureza_folha != "NORMAL"
+        ):
+            raise ValueError("O componente da diferença docente exige a fórmula correspondente na folha regular.")
+        return self
 
 
 class InterrupcaoProgressao(InterrupcaoApuracao):
@@ -167,6 +183,7 @@ class BaseMensalProgressao(ContratoPeriodo):
     id: Identificador
     competencia: str = Field(pattern=r"^[0-9]{4}-(?:0[1-9]|1[0-2])$")
     vb: ValorManual
+    rt: ValorManual | None = Field(default=None, exclude_if=lambda value: value is None)
     base_mensal_integral_confirmada: bool = Field(default=False, strict=True)
 
 
@@ -192,6 +209,8 @@ class PlanoProgressao(PlanoApuracao):
                 raise ValueError("Não repita competências ou identificadores das bases mensais.")
             if any(not item.base_mensal_integral_confirmada or not (item.vb.justificativa or "").strip() for item in entries):
                 raise ValueError("Confira a base mensal integral de cada competência e justifique sua utilização.")
+            if any(item.rt is not None and not item.rt.justificativa for item in entries):
+                raise ValueError("Registre a conferência da RT mensal utilizada.")
             progressions = [event.efeitos_financeiros for event in self.eventos if event.tipo == "PROGRESSAO"]
             if not progressions or min(progressions) != self.periodo.inicio:
                 raise ValueError("Com bases mensais, inicie a apuração na data dos efeitos da primeira progressão.")
@@ -217,6 +236,8 @@ class PlanoProgressao(PlanoApuracao):
         ):
             raise ValueError("Docente exige titulação da RT; IQ é exclusivo de TAE.")
         formulas = [item.formula for item in self.rubricas]
+        if any(item.rubrica.startswith("DIF-") for item in self.rubricas) and (tae or self.recebidos or self.interrupcoes):
+            raise ValueError("Para TAE, interrupções ou abatimento de pagamentos, utilize as rubricas de folha identificadas.")
         if "ADICIONAL_SOBRE_VB" in formulas and origin.percentual_adicional is None:
             raise ValueError(
                 "Confirme o percentual inicial da fórmula legada do adicional."

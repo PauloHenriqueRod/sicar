@@ -11,6 +11,12 @@ const month = (label: string): ReviewField => ({ label, inputMode: 'numeric', he
 const year = (label: string): ReviewField => ({ label, inputMode: 'numeric', placeholder: 'Ex.: 2026' });
 
 const fields: Record<string, ReviewField> = {
+  rubricas: { label: 'Rubricas devidas' },
+  jornada: { label: 'Jornada ou regime' },
+  versao_carreira: { label: 'Estrutura histórica da carreira' },
+  carreira: { label: 'Carreira' },
+  vinculo: { label: 'Vínculo' },
+  vinculo_calculo: { label: 'Vínculo ou contrato deste cálculo' },
   inicio_exercicio: { label: 'Entrada em exercício no cargo' },
   jornada_observada: { label: 'Jornada observada no cadastro' },
   regime_juridico: { label: 'Regime jurídico observado' },
@@ -18,8 +24,10 @@ const fields: Record<string, ReviewField> = {
   percentual_adicional_sugerido: percentage('Percentual sugerido do adicional'),
   codigo_cargo: { label: 'Código do cargo' },
   classe_origem: { label: 'Classe de origem' },
+  carreira_origem: { label: 'Carreira de origem' },
   nivel_origem: { label: 'Nível de origem' },
   identificador_ato: { label: 'Identificador do ato ou portaria' },
+  modalidade_progressao: { label: 'Modalidade da progressão indicada na portaria' },
   data_publicacao: { label: 'Data de publicação', help: 'Não substitui a data dos efeitos financeiros.' },
   inicio_designacao: { label: 'Início da designação' },
   fim_designacao: { label: 'Fim da designação' },

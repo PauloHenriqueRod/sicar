@@ -33,7 +33,7 @@ from app.services.salary_references import resolve_salary
 from app.services.substituicao_periodos import calcular_substituicao_periodos
 from app.utils.conversor import ConversorSaneador
 
-ENGINE_VERSION = "2026-11-03.1"
+ENGINE_VERSION = "2026-11-26.2"
 ROUNDING_POLICY = "decimal_half_up_final_v3"
 ROUNDING_NOTE = (
     "Valores monetários são apresentados com duas casas decimais e meio centavo para cima. "

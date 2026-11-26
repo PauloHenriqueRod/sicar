@@ -10,7 +10,9 @@ from fastapi import HTTPException
 
 from app.services import pdf_export
 from app.services.pdf_report_limits import (
-    MAX_REPORT_DEPTH, MAX_REPORT_NODES, MAX_REPORT_STRING_CHARS,
+    MAX_REPORT_DEPTH,
+    MAX_REPORT_NODES,
+    MAX_REPORT_STRING_CHARS,
     UnsupportedPDFCharacterError,
 )
 
@@ -117,6 +119,21 @@ def test_exportacao_ocupada_nao_inicia_processo(export_directory, monkeypatch):
     monkeypatch.setattr(pdf_export.subprocess, "run", lambda *a, **k: pytest.fail("Não deve iniciar processo."))
     with pytest.raises(HTTPException) as error:
         pdf_export.generate_pdf_report("abono", {}, {})
+    assert error.value.status_code == 503
+    assert not list(export_directory.glob("*.pdf"))
+
+
+def test_dependencia_do_gerador_ausente_tem_diagnostico_proprio(export_directory, monkeypatch):
+    worker = export_directory / "sem_gerador.py"
+    worker.write_text(
+        "import sys, runpy\n"
+        "sys.modules['app.services.gerador_pdf'] = None\n"
+        f"runpy.run_path({str(pdf_export._worker)!r}, run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pdf_export, "_worker", worker)
+    with pytest.raises(HTTPException, match="fpdf2") as error:
+        pdf_export.generate_pdf_report("progressao", {}, {})
     assert error.value.status_code == 503
     assert not list(export_directory.glob("*.pdf"))
 

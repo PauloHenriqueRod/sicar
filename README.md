@@ -67,8 +67,9 @@ O sistema é responsável por mitigar erros operacionais, acelerar a ingestão d
 3. Crie e configure o banco de dados PostgreSQL. Atualize a string de conexão no arquivo `.env` ou em `database.py`.
 4. Inicie o servidor FastAPI:
    ```bash
-   uvicorn app.main:app --reload
+   python -m uvicorn app.main:app --reload
    ```
+   No Windows, você também pode iniciar diretamente com o Python do ambiente virtual. A partir de `back-sgp`, use `.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload` quando o ambiente estiver nessa pasta ou `..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload` quando estiver na raiz do projeto.
    *A API estará disponível em `http://localhost:8000` (e o Swagger interativo em `/docs`).*
 
 ### 2. Configurando o Front-end

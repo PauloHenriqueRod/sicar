@@ -7,12 +7,18 @@ from pydantic import Field, field_validator, model_validator
 from app.schemas.apuracao_periodos import ContratoPeriodo
 
 
+class CorrecaoRubrica(ContratoPeriodo):
+    valor: str = Field(pattern=r"^-?[0-9]{1,12}(?:\.[0-9]{1,2})?$")
+    justificativa: str = Field(min_length=1, max_length=500, pattern=r"\S")
+
+
 class CampoExtraido(ContratoPeriodo):
     id: str = Field(min_length=1, max_length=100)
     bloco_id: str = Field(min_length=1, max_length=100)
     campo: str = Field(min_length=1, max_length=80)
     valor: str | None = Field(default=None, max_length=300)
     observado: str | None = Field(default=None, max_length=300)
+    correcao: CorrecaoRubrica | None = Field(default=None, exclude_if=lambda v: v is None)
     estado: Literal["EXTRAIDO", "AUSENTE", "AMBIGUO", "ILEGIVEL"]
     pagina: int | None = Field(default=None, ge=1, le=100)
     localizador: str = Field(max_length=200)
@@ -52,6 +58,8 @@ class CampoExtraido(ContratoPeriodo):
 
     @model_validator(mode="after")
     def evidencia(self):
+        if self.correcao and (self.campo != "rubrica" or not self.competencia or not self.pagina):
+            raise ValueError("A correção mensal exige uma rubrica com competência e página identificadas.")
         if self.estado == "EXTRAIDO" and (self.valor is None or self.pagina is None):
             raise ValueError("Valor extraído exige página e valor explícitos.")
         if self.estado == "AUSENTE" and (

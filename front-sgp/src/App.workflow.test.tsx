@@ -373,9 +373,9 @@ describe('Calculation workflow', () => {
     await uploadFiles();
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar e Calcular' }));
     await screen.findByRole('button', { name: 'Baixar PDF' });
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Exportação de relatórios ocupada.' }), { status: 503 })));
     fireEvent.click(screen.getByRole('button', { name: 'Baixar PDF' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível gerar o PDF');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível gerar o PDF. Exportação de relatórios ocupada.');
     expect(screen.getByRole('button', { name: 'Baixar PDF' })).toBeEnabled();
     let finishExport!: (response: Response) => void;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { finishExport = resolve; })));

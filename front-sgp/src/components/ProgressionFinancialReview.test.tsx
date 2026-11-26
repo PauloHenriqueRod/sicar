@@ -2,7 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ProgressionFinancialReview } from './ProgressionFinancialReview';
 import { emptyProgressionPlan, serializeProgressionPlan } from '../utils/periodReviewData';
-import type { Obj } from '../utils/documentExtraction';
+import { RevisaoDadosForm } from './RevisaoDadosForm';
+import type { ExtractionReview, Obj } from '../utils/documentExtraction';
 
 function data(): Obj {
   return { progressao: { ...emptyProgressionPlan(), modalidade: 'DOCENTE' }, revisao_extracao: {
@@ -75,4 +76,54 @@ it('prepara somente as competências do período sem presumir conferência', () 
   fireEvent.click(screen.getByRole('button', { name: 'Preparar VB por competência desta ficha' }));
   expect(change.mock.calls[0][1].progressao.bases_mensais_origem).toHaveLength(1);
   expect(change.mock.calls[0][1].progressao.bases_mensais_origem[0]).toMatchObject({ competencia: '2026-01', vb: { valor: '3000.00' }, base_mensal_integral_confirmada: false });
+});
+
+it('corrige uma ocorrência, preserva a fonte e atualiza o VB vinculado apenas no mês escolhido', () => {
+  const start = data();
+  const review = start.revisao_extracao as ExtractionReview;
+  const doc = review.documentos[0];
+  doc.campos.push({ ...doc.campos[0], id: 'vb-fev', competencia: '2026-02' });
+  const change = vi.fn();
+  const view = (d: Obj) => <ProgressionFinancialReview data={d} onChange={change} disabled={false} />;
+  const { rerender } = render(view(start));
+  fireEvent.change(screen.getByLabelText('Mês e ano da ficha financeira'), { target: { value: '2026-01' } });
+  fireEvent.click(screen.getAllByText('Conferir e usar')[0]);
+  fireEvent.click(screen.getByRole('button', { name: 'Usar VB nesta competência' }));
+  rerender(view(change.mock.lastCall![1]));
+  fireEvent.click(screen.getByLabelText('Editar valor de 00001 · 2026-01'));
+  fireEvent.change(screen.getByLabelText(/Valor conferido em reais/), { target: { value: '0' } });
+  fireEvent.click(screen.getByText('Salvar valor'));
+  expect(screen.getByRole('alert')).toHaveTextContent('motivo');
+  fireEvent.change(screen.getByLabelText('Motivo da correção'), { target: { value: 'Revisão da folha' } });
+  fireEvent.click(screen.getByText('Salvar valor'));
+  const saved = change.mock.lastCall![1];
+  expect(saved.progressao.bases_mensais_origem[0]).toMatchObject({ competencia: '2026-01', vb: { valor: '0.00' }, base_mensal_integral_confirmada: false });
+  expect(saved.revisao_extracao.documentos[0].campos[0]).toMatchObject({ valor: '3000.00', correcao: { valor: '0.00', justificativa: 'Revisão da folha' } });
+  expect(saved.revisao_extracao.aplicacoes[0].valor_revisado).toBe('0.00');
+  expect(saved.revisao_extracao.documentos[0].campos.at(-1).correcao).toBeUndefined();
+  rerender(view(saved));
+  fireEvent.change(screen.getByLabelText('Mês e ano da ficha financeira'), { target: { value: '2026-02' } });
+  expect(screen.getByText(/3\.000,00/)).toBeVisible();
+});
+
+it('concentra a conferência nas rubricas mensais, no período e no 13º', () => {
+  const entries = data();
+  (entries.revisao_extracao as ExtractionReview).documentos[0].avisos = [];
+  render(<RevisaoDadosForm data={{ dados_extraidos: entries, resultado_calculo: null }} isCalculated={false}
+    isUploading={false} handleChangeData={vi.fn()} onCalculate={vi.fn()} />);
+  expect(screen.getByLabelText('Mês e ano da ficha financeira')).toHaveValue('2026-01');
+  expect(screen.getByLabelText('Início da apuração')).toBeVisible();
+  expect(screen.getByLabelText('Último dia considerado (incluído)')).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Incluir 13º salário' })).toBeVisible();
+  expect(screen.queryByText('Pendências deste documento')).not.toBeInTheDocument();
+  expect(screen.getByText('Posição de origem')).toBeVisible();
+  expect(screen.queryByText('Incluir 1/3 de férias')).not.toBeInTheDocument();
+  expect(screen.queryByText('Continuar para os dados do cálculo')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Percentual inicial de anuênio')).toBeVisible();
+  expect(screen.getByLabelText('Percentual inicial de anuênio')).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Confirmar e Calcular' })).toBeDisabled();
+  expect(screen.queryByText('Posição, jornada e titulação')).toBeNull();
+  expect(screen.queryByText(/Servidor e fontes documentais/)).toBeNull();
+  expect(screen.getAllByLabelText('Percentual inicial de anuênio')).toHaveLength(1);
+  expect(screen.getByLabelText('Mês e ano da ficha financeira')).toBeVisible();
 });

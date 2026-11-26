@@ -193,7 +193,7 @@ def extrair_atos(pages):
             {
                 "id": str(uuid4()),
                 "leitor_id": LEITORES.get((metadata or {}).get("tipo"), "portaria_nao_suportada"),
-                "leitor_versao": "2",
+                "leitor_versao": "4" if (metadata or {}).get("tipo") == "PROGRESSAO" else "2",
                 "bloco_id": item["id"],
                 "campo": key,
                 "valor": value,
@@ -563,10 +563,13 @@ def extrair_atos(pages):
                 True,
             )
             if kind == "PROGRESSAO":
+                add(item, "modalidade_progressao", ["DOCENTE"], number, "Dispositivo de progressão funcional por desempenho acadêmico")
                 origin = re.findall(
                     r"Professor\s*\(a\)\s+MS\s*-\s*([A-E])\s*-\s*Denominacao\s+([A-Za-z]+)\s*-\s*(\d{1,2})\s*-",
                     flat, re.IGNORECASE,
                 )
+                if origin:
+                    add(item, "carreira_origem", ["MAGISTERIO_SUPERIOR"], number, "Dispositivo: Professor (a) MS na posição de origem")
                 for key, values in (("classe_origem", [t[0] for t in origin]),
                                     ("denominacao_origem", [t[1] for t in origin]),
                                     ("nivel_origem", [str(int(t[2])) for t in origin])):
@@ -624,6 +627,6 @@ def extrair_atos(pages):
             "blocos": blocks,
             "campos": fields,
             "avisos": warnings[:100],
-            "leitores": [{"identificador": name, "versao": "2", "paginas": sorted(numbers)} for name, numbers in reader_pages.items()],
+            "leitores": [{"identificador": name, "versao": "4" if name == LEITORES["PROGRESSAO"] else "2", "paginas": sorted(numbers)} for name, numbers in reader_pages.items()],
         }
     ).model_dump(mode="json"), consumed

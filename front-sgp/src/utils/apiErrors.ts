@@ -17,7 +17,12 @@ export function apiErrorDetails(body: unknown, fallback: string): ApiErrorDetail
     if (!issue || typeof issue !== 'object' || typeof issue.msg !== 'string' || !Array.isArray(issue.loc)) continue;
     const path = issue.loc.filter((part: unknown): part is string | number => typeof part === 'string' || typeof part === 'number');
     while (path[0] === 'body' || path[0] === 'dados_extraidos') path.shift();
-    const message = issue.type === 'missing' ? 'Preencha este campo.' : issue.msg.slice(0, 300);
+    let message = issue.msg.slice(0, 300);
+    if (issue.type === 'missing' || (issue.type === 'string_too_short' && /at least 1 character\b/.test(message))) {
+      message = 'Preencha este campo.';
+    } else if (issue.type === 'too_short' && /at least 1 item\b/.test(message)) {
+      message = 'Inclua pelo menos um registro.';
+    }
     if (path.length) {
       fields[JSON.stringify(path)] = message;
       messages.push(`${reviewField(path[path.length - 1], path).label}: ${message}`);

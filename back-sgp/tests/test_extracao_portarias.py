@@ -68,6 +68,7 @@ def test_docente_dates_destination_and_issuer_are_separate():
     doc = document(HEADER + PROGRESSION)
     assert doc["layout"] == "PORTARIA_UFPI_DOCENTE"
     assert doc["versao_leitor"] == "rh_paginas_v5"
+    assert observed(doc, "carreira_origem")[0]["valor"] == "MAGISTERIO_SUPERIOR"
     assert observed(doc, "nome")[0]["valor"] == "ALFA DOCENTE SINTÉTICO"
     assert observed(doc, "matricula")[0]["valor"] is None
     assert observed(doc, "data_documento")[0]["valor"] == "2026-02-20"
@@ -408,6 +409,22 @@ def test_act_date_cannot_fill_financial_effects():
         validar_revisao_extracao(data)
 
 
+def test_progression_order_suggestions_are_accepted_in_the_reviewed_plan():
+    doc = document(HEADER + PROGRESSION)
+    field, = observed(doc, "modalidade_progressao")
+    assert (field["valor"], field["pagina"], field["leitor_id"]) == ("DOCENTE", 1, "portaria_docente_progressao")
+    data = reviewed(doc, "efeitos_financeiros", "2026-02-05", "efeitos_financeiros")
+    start = data.revisao_extracao.aplicacoes[0]
+    start.destino = ["progressao", "periodo", "inicio"]
+    mode = start.model_copy(update={"campo_id": field["id"], "destino": ["progressao", "modalidade"], "valor_revisado": "DOCENTE"})
+    data.revisao_extracao.aplicacoes.append(mode)
+    data.model_dump = lambda: {"progressao": {"modalidade": "DOCENTE", "periodo": {"inicio": "2026-02-05"}}}
+    validar_revisao_extracao(data)
+    start.campo_id = observed(doc, "data_documento")[0]["id"]
+    with pytest.raises(PendenciaApuracao, match="Destino incompatível"):
+        validar_revisao_extracao(data)
+
+
 def test_explicit_person_role_cannot_be_changed_by_association():
     doc = document(HEADER + PROGRESSION)
     data = reviewed(doc, "nome", "ALFA", "nome")
@@ -428,11 +445,13 @@ def test_worker_and_upload_contract_use_the_new_reader(auth_client_user, tmp_pat
     pdf.output(target)
     response = auth_client_user.post(
         "/api/extrair-pdf",
-        data={"tipo_calculo": "progressao", "versao_extracao": "2"},
+        data={"tipo_calculo": "progressao", "versao_extracao": "2",
+              "metadados_arquivos": '[{"id":"fonte","categoria":"ata"}]'},
         files={"arquivos": (target.name, target.read_bytes(), "application/pdf")},
     )
     assert response.status_code == 200, response.text
     result = response.json()["resultados"][0]["extracao"]
+    assert not any("difere da seção" in message for message in result["avisos"])
     assert result["layout"] == "PORTARIA_UFPI_DOCENTE"
     assert observed(result, "nivel_destino")[0]["valor"] == "2"
     assert observed(result, "efeitos_financeiros")[0]["valor"] == "2026-02-05"

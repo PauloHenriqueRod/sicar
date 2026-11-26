@@ -285,6 +285,29 @@ def review_data():
     return {"matricula": "000999", "exercicios": business, "revisao_extracao": review}
 
 
+def test_fonte_da_base_docente_precisa_corresponder_ao_mes_e_componente():
+    from test_progressao_eventos import monthly_docente_plan
+
+    from app.schemas.calculos import ProgressaoEventosDados
+
+    data = review_data()
+    data.pop("exercicios")
+    data["progressao"] = monthly_docente_plan()
+    review = data["revisao_extracao"]
+    doc = review["documentos"][0]
+    field = {"id": "vb-fev", "bloco_id": doc["blocos"][0]["id"], "campo": "rubrica",
+             "valor": "3000", "rubrica": "00001", "competencia": "2024-02", "natureza": "R", "sequencia": "0",
+             "pagina": 1, "localizador": "linha VB", "estado": "EXTRAIDO"}
+    doc["campos"].append(field)
+    review["aplicacoes"].append({"documento_id": doc["id"], "campo_id": "vb-fev", "registro_id": "base-fev",
+                                 "destino": ["progressao", "bases_mensais_origem", 0, "vb", "valor"], "valor_revisado": "3000"})
+    validar_revisao_extracao(ProgressaoEventosDados.model_validate(data))
+    for key, wrong in (("competencia", "2024-03"), ("rubrica", "82606"), ("natureza", "D"), ("sequencia", "1")):
+        doc["campos"][-1] = {**field, key: wrong}
+        with pytest.raises(PendenciaApuracao, match="corresponder à base mensal"):
+            validar_revisao_extracao(ProgressaoEventosDados.model_validate(data))
+
+
 @pytest.mark.parametrize(
     "change",
     [

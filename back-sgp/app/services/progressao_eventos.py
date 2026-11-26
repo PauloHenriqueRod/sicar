@@ -20,19 +20,27 @@ def fracao(value):
 
 
 def calcular_progressao_eventos(plan: PlanoProgressao, db):
+    # Aplicar ao calcular preserva a leitura e a repetição idempotente dos snapshots anteriores.
+    if any(item.rubrica in ("DIF-VB", "DIF-RT") for item in plan.rubricas):
+        if not plan.bases_mensais_origem:
+            raise PendenciaApuracao("base_mensal_ausente", "Informe o VB e a RT pagos em cada competência da progressão docente.")
+        for item in plan.bases_mensais_origem:
+            if item.rt is None:
+                raise PendenciaApuracao("rt_mensal_ausente", f"Confira a RT paga em {item.competencia}, inclusive zero quando confirmado.")
     apoio: dict = {}
     for event in plan.reflexos:
         apoio.setdefault(event.data_base, set()).update(event.formulas_base)
-    monthly = {item.competencia: plan.estado_inicial.model_copy(update={"vb_manual": item.vb}) for item in plan.bases_mensais_origem}
+    monthly = {
+        item.competencia: {"vb_manual": item.vb, **({"rt_manual": item.rt} if item.rt is not None else {})}
+        for item in plan.bases_mensais_origem
+    }
     if monthly:
-        from calendar import monthrange
-        from datetime import date, timedelta
-
-        cursor = plan.periodo.inicio.replace(day=1)
-        while cursor <= plan.periodo.ultimo_dia_considerado:
-            if f"{cursor:%Y-%m}" not in monthly:
-                raise PendenciaApuracao("base_mensal_ausente", f"Confira o VB mensal da ficha para {cursor:%Y-%m}; ausência não equivale a zero.")
-            cursor = date(cursor.year, cursor.month, monthrange(cursor.year, cursor.month)[1]) + timedelta(days=1)
+        start, end = plan.periodo.inicio, plan.periodo.ultimo_dia_considerado
+        for index in range(start.year * 12 + start.month - 1, end.year * 12 + end.month):
+            year, month = divmod(index, 12)
+            competencia = f"{year:04}-{month + 1:02}"
+            if competencia not in monthly:
+                raise PendenciaApuracao("base_mensal_ausente", f"Faltam valores da folha em {competencia}. Confira a ficha ou informe a base mensal manualmente.")
     result = apurar_periodos(
         plan, db, comparacao=plan.estado_inicial, formulas_apoio=apoio,
         comparacoes_mensais=monthly,
@@ -47,6 +55,8 @@ def calcular_progressao_eventos(plan: PlanoProgressao, db):
     if monthly:
         result["bases_mensais_origem"] = [item.model_dump(mode="json") for item in plan.bases_mensais_origem]
         result["nota_comparacao"] = "VB da posição de destino contra a base mensal integral conferida em cada competência da ficha. Diferenças já pagas são abatidas separadamente; parcelas proporcionais/mistas exigem revisão. RT e demais componentes mantêm suas regras explícitas."
+        if all(item.rt is not None for item in plan.bases_mensais_origem):
+            result["nota_comparacao"] = "VB e RT da posição de destino comparados separadamente com os valores mensais integrais pagos e conferidos pelo RH. Abatimentos de diferenças já pagas e reflexos são discriminados à parte."
     validar_tamanho_resultado(result)
     return result
 

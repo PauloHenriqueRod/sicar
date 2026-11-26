@@ -4,6 +4,70 @@ import type { ExtractedDocument, ExtractionReview } from './documentExtraction';
 import { emptyAbonoPlan } from './abonoReview';
 import { serializeReviewData } from './reviewData';
 import { emptySubstitutionPlan } from './substitutionReview';
+import { suggestFinancialOrigin, suggestProgressionOrder } from './documentExtraction';
+import { singleDocenteReview, invalidateDocenteOrigin } from './progressionReviewValidation';
+
+it('usa o mesmo cabeçalho docente para sugerir a origem e rejeita posições divergentes ou codificadas', () => {
+  const doc = identificationSource();
+  doc.layout = 'FICHA_SIAPE';
+  doc.blocos = [{ ...doc.blocos[0], categoria: 'DOCENTE' }];
+  doc.campos = [['classe_docente_observada', 'A'], ['nivel_docente_observado', '01']].map(([campo, valor]) =>
+    ({ ...doc.campos[0], id: campo, campo, valor, fontes_campo_ids: ['cabecalho'] }));
+  const input = () => ({ progressao: {}, revisao_extracao: mergeExtractions(undefined, [doc]) });
+  expect(suggestFinancialOrigin(input())).toMatchObject({ progressao: { estado_inicial: { posicao: { classe_docente: 'A', nivel_docente: '1' } } },
+    revisao_extracao: { aplicacoes: [{ campo_id: 'classe_docente_observada' }, { campo_id: 'nivel_docente_observado' }] } });
+  doc.campos[0].valor = '6';
+  expect(suggestFinancialOrigin(input()).progressao).toEqual({});
+  doc.campos[0].valor = 'A';
+  doc.campos.push({ ...doc.campos[0], id: 'outro', valor: 'B' });
+  expect(suggestFinancialOrigin(input()).progressao).toEqual({});
+});
+
+it('associa uma ficha e um ato do mesmo docente, conservando a conferência e bloqueando conflitos', () => {
+  const fin = identificationSource();
+  fin.blocos = [{ ...fin.blocos[0], categoria: 'DOCENTE' }];
+  const block = fin.blocos[0];
+  const ato = { ...fin, id: 'ATO', impressao: 'b'.repeat(64), blocos: [{ ...block, matricula: null, vinculo: null }] };
+  const data = () => ({ nome: block.nome, matricula: block.matricula, progressao: { conferido_pelo_rh: true }, revisao_extracao: mergeExtractions(undefined, [fin, ato]) });
+  expect(singleDocenteReview(data()).associacoes).toMatchObject([{ confirmado: true }, { matricula: block.matricula, confirmado: true }]);
+  expect(singleDocenteReview({ ...data(), progressao: {} }).confirmado).toBe(false);
+  const corrected = { ...data(), nome: 'NOME CORRIGIDO' };
+  corrected.revisao_extracao.aplicacoes = [{ documento_id: fin.id, campo_id: 'NAME', destino: ['nome'],
+    valor_revisado: corrected.nome, justificativa: 'Grafia conferida no cadastro da mesma matrícula.' }];
+  expect(singleDocenteReview(corrected).confirmado).toBe(true);
+  ato.blocos = [{ ...ato.blocos[0], nome: 'OUTRO DOCENTE' }];
+  expect(() => singleDocenteReview(data())).toThrow(/identificação/);
+  const divergent = data();
+  Object.assign(divergent.revisao_extracao.documentos[1].blocos[0], { ...block, matricula: '98765' });
+  expect(() => singleDocenteReview(divergent)).toThrow(/identificação/);
+  Object.assign(divergent.revisao_extracao.documentos[0].blocos[0], { vinculo: 'V1' });
+  Object.assign(divergent.revisao_extracao.documentos[1].blocos[0], { ...block, vinculo: 'V2' });
+  expect(() => singleDocenteReview(divergent)).toThrow(/vínculos diferentes/);
+});
+
+it('reconfere a referência automática quando muda a data inicial', () => {
+  const observed = { classe_docente: 'A', nivel_docente: '1' };
+  const plan = { periodo: { inicio: '2025-01-01' }, estado_inicial: { posicao: { ...observed, versao_carreira: '2024' } },
+    origem_automatica: { data: '2024-12-31', posicao_observada: observed }, conferido_pelo_rh: true };
+  expect(invalidateDocenteOrigin({ progressao: plan }).progressao).toEqual({
+    periodo: plan.periodo, estado_inicial: { posicao: observed }, conferido_pelo_rh: false });
+});
+
+it.each(['ambiguous', 'different person', 'manual', 'two orders', 'qualification'])('respects uncertainty and prior entries in progression suggestions (%s)', scenario => {
+  const source = identificationSource();
+  source.layout = 'PORTARIA_UFPI_DOCENTE';
+  source.blocos = [{ ...source.blocos[0], categoria: 'DOCENTE', papel_documental: 'SERVIDOR', matricula: null }];
+  const reader = scenario === 'qualification' ? 'portaria_docente_titulacao' : 'portaria_docente_progressao';
+  source.campos = [...source.campos, ...Object.entries({ modalidade_progressao: 'DOCENTE', efeitos_financeiros: '2024-02-15' }).map(([campo, valor]) => ({ ...source.campos[0], campo, valor, id: campo }))].map(f => ({ ...f, leitor_id: reader }));
+  if (scenario === 'ambiguous') Object.assign(source.campos.at(-1)!, { estado: 'AMBIGUO', valor: null });
+  const docs = scenario === 'two orders' ? [source, { ...source, id: 'NEW', impressao: 'c'.repeat(64) }] : [source];
+  const data = { nome: scenario === 'different person' ? 'OUTRO DOCENTE' : '', progressao: { modalidade: '', periodo: { inicio: scenario === 'manual' ? '2024-03-10' : '' } }, revisao_extracao: mergeExtractions(undefined, docs) };
+  const result = suggestProgressionOrder(data);
+  if (scenario === 'ambiguous' || scenario === 'manual') {
+    expect(result.progressao).toEqual({ ...data.progressao, modalidade: 'DOCENTE' });
+    expect((result.revisao_extracao as ExtractionReview).aplicacoes).toMatchObject([{ documento_id: source.id, campo_id: 'modalidade_progressao' }]);
+  } else expect(result).toBe(data);
+});
 
 it('keeps reader revisions separate without duplicating the same extraction or applying money', () => {
   const source: ExtractedDocument = { ...doc, versao_leitor: 'rh_paginas_v5', leitores: [{ identificador: 'siape_tae', versao: '1', paginas: [1] }] };
@@ -58,6 +122,46 @@ it.each(['person', 'name', 'link', 'ambiguous', 'missing-proof'])('does not sugg
   const documents = ['ambiguous', 'missing-proof'].includes(change) ? [source] : [source, other];
   const data = { nome: '', matricula: '', progressao: {}, revisao_extracao: mergeExtractions(undefined, documents) };
   expect(suggestProgressionIdentification(data)).toEqual(data);
+});
+
+it.each([false, true])('sugere vínculo documental com prova e preserva uma associação divergente (%s)', conflict => {
+  const source = structuredClone(identificationSource());
+  source.blocos[0].vinculo = 'CONTRATO-123';
+  source.campos.push({ ...source.campos[0], id: 'LINK', campo: 'vinculo', valor: 'CONTRATO-123' });
+  const review = mergeExtractions(undefined, [source]);
+  if (conflict) review.associacoes[0].vinculo = 'OUTRO';
+  const result = suggestProgressionIdentification({ progressao: { estado_inicial: { posicao: { vinculo: '' } } }, revisao_extracao: review });
+  expect(result.revisao_extracao).toMatchObject({ vinculo_calculo: conflict ? '' : 'CONTRATO-123', confirmado: false,
+    associacoes: [{ vinculo: conflict ? 'OUTRO' : 'CONTRATO-123', confirmado: false }] });
+  expect(result.progressao).toEqual({ estado_inicial: { posicao: { vinculo: '' } } });
+});
+
+it('sugere o enquadramento de origem explícito e preserva a classe já conferida', () => {
+  const source = structuredClone(identificationSource());
+  source.layout = 'PORTARIA_UFPI_DOCENTE';
+  Object.assign(source.blocos[0], { categoria: 'DOCENTE', papel_documental: 'SERVIDOR' });
+  source.campos.push(...Object.entries({ carreira_origem: 'MAGISTERIO_SUPERIOR', classe_origem: 'A', nivel_origem: '2', jornada: '40', titulacao_destino: 'Exemplo' })
+    .map(([campo, valor]) => ({ ...source.campos[0], id: campo, campo, valor })));
+  source.campos.forEach(f => { f.leitor_id = 'portaria_docente_progressao'; });
+  const result = suggestProgressionOrder({ progressao: { estado_inicial: { posicao: { classe_docente: 'B' } } }, revisao_extracao: mergeExtractions(undefined, [source]) });
+  expect(result.progressao).toEqual({ estado_inicial: { posicao: { carreira: 'MAGISTERIO_SUPERIOR', classe_docente: 'B', nivel_docente: '2', jornada: '40H' } } });
+  expect((result.revisao_extracao as ExtractionReview).aplicacoes.find(a => a.campo_id === 'jornada')).toMatchObject({ valor_revisado: '40H', documento_id: source.id });
+});
+
+it('mantém o nível ambíguo em branco e preserva o destino revisado ao reaplicar o ato', () => {
+  const source = structuredClone(identificationSource());
+  source.layout = 'PORTARIA_UFPI_DOCENTE';
+  Object.assign(source.blocos[0], { categoria: 'DOCENTE', papel_documental: 'SERVIDOR' });
+  source.campos.push(...Object.entries({ classe_destino: 'C', nivel_destino: '2', efeitos_financeiros: '2024-05-06' })
+    .map(([campo, valor]) => ({ ...source.campos[0], id: campo, campo, valor })));
+  source.campos.forEach(f => { f.leitor_id = 'portaria_docente_progressao'; });
+  Object.assign(source.campos.find(f => f.campo === 'nivel_destino')!, { estado: 'AMBIGUO', valor: null });
+  const result = suggestProgressionOrder({ progressao: { eventos: [] }, revisao_extracao: mergeExtractions(undefined, [source]) });
+  const plan = result.progressao as { eventos: { alteracoes: { posicao: { classe_docente: string; nivel_docente: string } } }[] };
+  expect(plan.eventos).toMatchObject([{ efeitos_financeiros: '2024-05-06', alteracoes: { posicao: { classe_docente: 'C', nivel_docente: '' } } }]);
+  plan.eventos[0].alteracoes.posicao.classe_docente = 'D';
+  expect(suggestProgressionOrder(result)).toBe(result);
+  expect(plan.eventos).toHaveLength(1);
 });
 
 it('preserves values already entered and never creates missing dates, positions or financial entries', () => {

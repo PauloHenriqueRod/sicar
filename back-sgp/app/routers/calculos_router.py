@@ -41,6 +41,7 @@ from app.schemas.calculos import (
     SubstituicaoPeriodosDados,
     entradas_calculo,
 )
+from app.schemas.progressao_eventos import PlanoProgressao
 from app.services.apuracao_periodos import PendenciaApuracao
 from app.services.auth_service import get_current_user
 from app.services.calculation_service import execute_calculation
@@ -88,6 +89,20 @@ def contrato_apuracao_periodos():
 @router.get("/calculos/contratos/progressao")
 def contrato_progressao():
     return ProgressaoEventosDados.model_json_schema()
+
+
+@router.post("/calculos/progressao/previa-folha")
+@limiter.limit("30/minute")
+def previa_folha_docente(request: Request, payload: PlanoProgressao, db: Session = Depends(get_db)):
+    from app.services.progressao_eventos import calcular_progressao_eventos
+    from app.services.progressao_relatorio import comparativo_folha
+
+    if not payload.bases_mensais_origem or any(item.rt is None for item in payload.bases_mensais_origem):
+        raise HTTPException(422, detail="Confira o VB e a RT de todas as competências.")
+    try:
+        return {"parcelas": comparativo_folha(calcular_progressao_eventos(payload, db))}
+    except PendenciaApuracao as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
 
 
 @router.get("/calculos/contratos/adicionais")
@@ -370,7 +385,13 @@ async def extrair_pdf(
                     doc["arquivo_id"], doc["categoria_informada"] = meta.id, meta.categoria
                     expected = {"financeira": {"FICHA_SIAPE"}, "cadastro": {"CADASTRO_FUNCIONAL"},
                                 "ferias": {"CACOFERIAS"}, "ato": {"PORTARIA_UFPI_DOCENTE", "PORTARIA_UFPI_TAE", "ATO_UFPI_SUBSTITUICAO"}, "ata": set()}
-                    if meta.categoria in expected and doc["layout"] not in expected[meta.categoria]:
+                    if tipo_calculo == "progressao" and any(
+                        leitor["identificador"] == "portaria_docente_progressao"
+                        for leitor in doc.get("leitores", [])
+                    ):
+                        expected["ata"] = {"PORTARIA_UFPI_DOCENTE"}
+                    if (meta.categoria in expected and doc["layout"] not in {"NAO_SUPORTADO", "MISTO"}
+                            and doc["layout"] not in expected[meta.categoria]):
                         doc["avisos"] = (doc["avisos"] + ["O conteúdo reconhecido difere da seção selecionada; confira o tipo do documento."])[:100]
     except Exception as exc:
         status = exc.status_code if isinstance(exc, HTTPException) else 500

@@ -16,12 +16,18 @@ from app.schemas.apuracao_periodos import (
     EstadoRemuneratorio,
     ParcelaRecebida,
     PlanoApuracao,
+    ValorManual,
 )
 from app.schemas.referencias_salariais import PosicaoSalarial
 from app.services.adicionais_base import (
     componentes_adicional,
     limites_concessao,
     mensal_adicional,
+)
+from app.services.correlacao_magisterio import (
+    INICIO_MS_2025,
+    REGRA_MS_2025,
+    posicao_ms_2025,
 )
 from app.services.pendencias import PendenciaApuracao
 from app.services.periodos import dividir_intervalo, limites_mensais
@@ -123,13 +129,23 @@ def conciliar_recebimentos(recebidos):
     return accepted, duplicates
 
 
-def _referencias(plan, db):
+def _referencias(plan, db, *, correlacao_ms=False):
     positions = {plan.estado_inicial.posicao.chave_estrutura()}
     positions.update(
         event.alteracoes.posicao.chave_estrutura()
         for event in plan.eventos
         if event.alteracoes.posicao
     )
+    if correlacao_ms:
+        anteriores = [plan.estado_inicial.posicao]
+        anteriores.extend(
+            event.alteracoes.posicao for event in plan.eventos
+            if event.efeitos_financeiros < INICIO_MS_2025 and event.alteracoes.posicao
+        )
+        for anterior in anteriores:
+            nova = posicao_ms_2025(anterior)
+            if nova is not None:
+                positions.add(nova.chave_estrutura())
     # Uma única leitura inclui VB e todas as RTs de todas as posições utilizadas.
     rows = (
         db.query(ReferenciaSalarial)
@@ -186,9 +202,13 @@ def _bases(state, refs, first, last, need_vb, need_rt, *, exigir_referencia=Fals
             )
         ]
         if len(candidates) != 1:
+            pos = state.posicao
+            enquadramento = f"{pos.classe_docente} {pos.nivel_docente}" if pos.classe_docente else f"{pos.classificacao_tae} {pos.padrao_tae}"
             raise PendenciaApuracao(
                 "referencia_salarial_pendente",
-                f"Não há referência confirmada única entre {first.isoformat()} e {last.isoformat()} para a posição/jornada informada.",
+                f"{len(candidates)} referências confirmadas de {first.isoformat()} a {last.isoformat()} "
+                f"para {pos.carreira}, posição {enquadramento}, {pos.jornada}, {pos.vinculo}, estrutura {pos.versao_carreira}. "
+                "Confira a posição e a vigência no cadastro salarial.",
             )
         reference = candidates[0]
     for component, needed, manual in (
@@ -272,17 +292,29 @@ def valor_mensal(rubric, state, bases, first, last=None):
     return bases["VB"] * Fraction(percentage) / 100
 
 
+def _reposicionar_ms(estado: EstadoRemuneratorio, papel: str, correlacoes: dict) -> EstadoRemuneratorio:
+    nova = posicao_ms_2025(estado.posicao)
+    if nova is None:
+        return estado
+    correlacoes[papel] = {
+        "anterior": estado.posicao.model_dump(mode="json", exclude_none=True),
+        "vigente": nova.model_dump(mode="json", exclude_none=True),
+    }
+    return estado.model_copy(update={"posicao": nova, "vb_manual": None, "rt_manual": None})
+
+
 def apurar_periodos(
     plan: PlanoApuracao,
     db,
     *,
     comparacao: EstadoRemuneratorio | None = None,
     formulas_apoio: dict[date, set[str]] | None = None,
-    comparacoes_mensais: Mapping[str, EstadoRemuneratorio] | None = None,
+    comparacoes_mensais: Mapping[str, dict[str, ValorManual]] | None = None,
 ):
     accepted, duplicates = conciliar_recebimentos(plan.recebidos)
     start, end = plan.periodo.inicio, plan.periodo.ultimo_dia_considerado
-    refs = _referencias(plan, db)
+    correlacao_ms = getattr(plan, "modalidade", None) == "DOCENTE" and start < INICIO_MS_2025 <= end
+    refs = _referencias(plan, db, correlacao_ms=correlacao_ms)
     limits = limites_mensais(start, end)
     events = sorted(
         plan.eventos, key=lambda event: (event.efeitos_financeiros, event.id)
@@ -307,8 +339,16 @@ def apurar_periodos(
     parcel_count = 0
     segment_bytes = 0
     comparison_default = comparacao
+    correlacoes: dict[str, dict] = {}
     for first, last, days, days_month in dividir_intervalo(start, end, limits):
-        comparacao = (comparacoes_mensais or {}).get(f"{first:%Y-%m}", comparison_default)
+        if correlacao_ms and first == INICIO_MS_2025:
+            state = _reposicionar_ms(state, "DESTINO", correlacoes)
+            if comparison_default is not None:
+                comparison_default = _reposicionar_ms(comparison_default, "ORIGEM", correlacoes)
+        mensal = (comparacoes_mensais or {}).get(f"{first:%Y-%m}")
+        comparacao = comparison_default
+        if mensal is not None and comparison_default is not None:
+            comparacao = comparison_default.model_copy(update=mensal)
         while (
             event_index < len(events)
             and events[event_index].efeitos_financeiros <= first
@@ -425,6 +465,8 @@ def apurar_periodos(
         rules = [item.regra.model_dump(mode="json") for item in plan.rubricas]
         rules.extend(event.regra.model_dump(mode="json") for event in applied)
         rules.extend(item.regra.model_dump(mode="json") for item in interruptions)
+        if correlacoes:
+            rules.append({**REGRA_MS_2025, "posicoes_na_transicao": correlacoes})
         for rubric in plan.rubricas:
             used = rubric.formula in formulas
             monthly = (

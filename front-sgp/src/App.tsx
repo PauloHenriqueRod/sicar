@@ -22,8 +22,9 @@ import type { Feedback } from './components/ActionFeedback';
 import type { TipoCalculo, CalculationItem } from './types';
 import { prepareReviewData, serializeReviewData } from './utils/reviewData';
 import { Button, Modal } from './components/ui';
+import { invalidateDocenteOrigin, missingProgressionInputs } from './utils/progressionReviewValidation';
 import { apiErrorDetails } from './utils/apiErrors';
-import { mergeExtractions, suggestProgressionIdentification, syncApplications, onlyGlobalApprovalChanged } from './utils/documentExtraction';
+import { mergeExtractions, suggestFinancialOrigin, suggestProgressionIdentification, suggestProgressionOrder, syncApplications, onlyGlobalApprovalChanged } from './utils/documentExtraction';
 import type { ExtractedDocument, ExtractionReview } from './utils/documentExtraction';
 
 const updateIn = (obj: unknown, path: (string | number)[], value: unknown): unknown => {
@@ -210,7 +211,10 @@ export default function App() {
         }),
       });
 
-      if (!response.ok) throw new Error('Falha ao gerar o PDF oficial.');
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(typeof body?.detail === 'string' ? body.detail : 'Tente baixar novamente.');
+      }
 
       const blob = await response.blob();
       if (!operation.isCurrent()) return;
@@ -225,9 +229,8 @@ export default function App() {
       setFeedback({ tone: 'success', message: 'PDF gerado. Download solicitado ao navegador.', detail: 'Confira o aviso do navegador ou a pasta de downloads.' });
     } catch (err: unknown) {
       if (!operation.isCurrent()) return;
-      console.error(err);
       setFeedback(null);
-      setError('Não foi possível gerar o PDF. ' + (err instanceof Error ? err.message : String(err)) + ' Tente baixar novamente.');
+      setError('Não foi possível gerar o PDF. ' + (err instanceof Error ? err.message : 'Tente baixar novamente.'));
     } finally {
       pendingRequests.current.delete(operation.controller);
       if (operation.isCurrent()) setIsExporting(false);
@@ -283,7 +286,13 @@ export default function App() {
         if (currentItem?.historico_id) prepared.substitui_historico_id = currentItem.historico_id;
         const sources = mergeExtractions(prepared.revisao_extracao as ExtractionReview | undefined, result.resultados.map((item: { extracao: ExtractedDocument }) => item.extracao));
         if (sources.documentos.length) prepared.revisao_extracao = sources;
-        if (tipoCalculo === 'progressao' && !previous) prepared = suggestProgressionIdentification(prepared);
+        if (tipoCalculo === 'progressao' && !previous) prepared = suggestFinancialOrigin(suggestProgressionOrder(suggestProgressionIdentification(prepared)));
+        else if (tipoCalculo === 'progressao' && sources.documentos.some(doc =>
+          !(previous?.revisao_extracao as ExtractionReview | undefined)?.documentos.some(old => old.id === doc.id) &&
+          doc.campos.some(f => f.leitor_id === 'portaria_docente_progressao'))) prepared = suggestProgressionOrder(prepared);
+        else if (tipoCalculo === 'progressao' && sources.documentos.some(doc => doc.layout === 'FICHA_SIAPE' &&
+          !(previous?.revisao_extracao as ExtractionReview | undefined)?.documentos.some(old => old.id === doc.id))) prepared = suggestFinancialOrigin(suggestProgressionIdentification(prepared));
+        prepared = invalidateDocenteOrigin(prepared);
         for (const name of ['apuracao', 'progressao', 'adicionais', 'substituicao', 'rescisao', 'abono', 'exercicios']) if (prepared[name]) prepared[name] = { ...(prepared[name] as Record<string, unknown>), conferido_pelo_rh: false };
         nextItem = { filename: 'Processo com fontes documentais', dados_extraidos: prepared, resultado_calculo: null, historico_id: null, falhas_extracao: result.falhas ?? [] };
       } else if (tipoCalculo === 'exercicio_anterior' && result.resultados.some((doc: Record<string, unknown>) => doc.candidatos_exercicios !== undefined)) {
@@ -339,6 +348,13 @@ export default function App() {
 
   const handleCalculate = async () => {
     if (!currentItem?.dados_extraidos || !tipoCalculo) return;
+    const missing = missingProgressionInputs(currentItem.dados_extraidos);
+    if (Object.keys(missing).length) {
+      setFeedback(null);
+      setError(null);
+      setFieldErrors(missing);
+      return;
+    }
     const operation = beginOperation();
     const idempotencyKey = currentItem.idempotency_key ?? crypto.randomUUID();
     setCurrentItem({ ...currentItem, idempotency_key: idempotencyKey });
@@ -426,6 +442,7 @@ export default function App() {
   const handleChangeData = (path: (string | number)[], val: unknown) => {
     if (!currentItem) return;
     let novoDados = updateIn(currentItem.dados_extraidos, path, val) as Record<string, unknown>;
+    novoDados = invalidateDocenteOrigin(novoDados);
     const approvalOnly = onlyGlobalApprovalChanged(currentItem.dados_extraidos ?? {}, novoDados, path);
     if (!approvalOnly && path[0] !== 'revisao_extracao') novoDados = syncApplications(novoDados);
     for (const key of ['adicionais', 'progressao', 'apuracao', 'substituicao', 'rescisao', 'abono', 'exercicios']) {
@@ -433,7 +450,7 @@ export default function App() {
     }
     if (currentItem.historico_id && path[0] !== 'substitui_historico_id') novoDados.substitui_historico_id = currentItem.historico_id;
     setError(null);
-    setFieldErrors({});
+    setFieldErrors(Object.keys(fieldErrors).length ? missingProgressionInputs(novoDados) : {});
     if (currentItem.resultado_calculo != null) {
       setFeedback({ tone: 'info', message: 'Dados atualizados.', detail: 'Confirme e calcule novamente para atualizar o resultado.' });
     }
@@ -677,7 +694,7 @@ export default function App() {
             <div className="page-layout">
               {!!fileProgress.length && <section aria-label="Situação dos arquivos" className="surface p-4"><h3 className="subsection-title">Arquivos enviados</h3><ul aria-live="polite">{fileProgress.map((file, index) => <li key={index}>{file.filename}: {file.status}</li>)}</ul></section>}
               <CalculationSteps current={!currentItem ? 'documentos' : currentItem?.resultado_calculo != null ? 'resultado' : 'revisao'} />
-              <ActionFeedback feedback={error ? { tone: 'error', message: error } : feedback} />
+              <ActionFeedback inline={tipoCalculo === 'progressao' && hasReview && feedback?.tone === 'success' && !error} feedback={error ? { tone: 'error', message: error } : feedback} />
               {error && tipoCalculo && !currentItem && !isUploading && <Button variant="secondary" onClick={startManualReview}>Continuar com preenchimento manual</Button>}
               {!currentItem ? (
                 <div className="grid place-items-center">
