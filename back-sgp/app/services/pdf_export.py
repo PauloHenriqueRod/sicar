@@ -33,6 +33,9 @@ def generate_pdf_report(tipo_calculo: str, dados_extraidos: dict[str, Any],
             if resultado_calculo.get("tipo_substituicao") == "periodos_v1":
                 from app.services.substitution_report import substitution_report
                 dados_extraidos, resultado_calculo = substitution_report(dados_extraidos, resultado_calculo)
+            elif tipo_calculo == "progressao" and resultado_calculo.get("tipo_progressao") == "eventos_v1":
+                from app.services.progressao_relatorio import relatorio_progressao
+                dados_extraidos, resultado_calculo = relatorio_progressao(dados_extraidos, resultado_calculo)
             payload = encode_report_payload(tipo_calculo, dados_extraidos, resultado_calculo)
         except PDFReportLimitError:
             raise HTTPException(status_code=413, detail="O relatório excede o limite de dados, texto ou campos. Divida o período.")
@@ -64,6 +67,8 @@ def generate_pdf_report(tipo_calculo: str, dados_extraidos: dict[str, Any],
             raise HTTPException(status_code=413, detail="O relatório excede o limite de páginas, dados ou memória. Divida o período.")
         if status == "unavailable":
             raise HTTPException(status_code=503, detail="Gerador de relatórios indisponível.")
+        if status == "missing_dependencies":
+            raise HTTPException(status_code=503, detail="Dependências do gerador de PDF indisponíveis. Inicie a API no ambiente virtual do projeto com fpdf2 instalado.")
         if status == "unsupported":
             raise UnsupportedPDFCharacterError(message["detail"])
         if status != "ok":

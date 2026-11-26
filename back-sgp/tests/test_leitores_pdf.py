@@ -557,3 +557,23 @@ def test_previous_reader_snapshots_still_validate_without_new_metadata():
         parsed = DocumentoExtraido.model_validate(legacy)
         assert parsed.versao_leitor == version
         assert parsed.model_dump(mode="json") == legacy
+
+
+def test_monthly_correction_preserves_source_and_requires_identified_payroll_line():
+    from pydantic import ValidationError
+
+    from app.schemas.extracao_documentos import CampoExtraido
+
+    data = {
+        "id": "vb", "bloco_id": "b", "campo": "rubrica", "competencia": "2026-01",
+        "valor": "3000.00", "pagina": 1, "localizador": "Linha 1", "estado": "EXTRAIDO",
+        "correcao": {"valor": "0.00", "justificativa": "Conferido na ficha"},
+    }
+    campo = CampoExtraido.model_validate(data)
+    assert campo.model_dump()["correcao"]["valor"] == "0.00"
+    assert campo.valor == "3000.00"
+    for change in ({"competencia": None}, {"campo": "nome"},
+                   {"correcao": {"valor": "1,2", "justificativa": "Conferido"}},
+                   {"correcao": {"valor": "1", "justificativa": " "}}):
+        with pytest.raises(ValidationError):
+            CampoExtraido.model_validate({**data, **change})

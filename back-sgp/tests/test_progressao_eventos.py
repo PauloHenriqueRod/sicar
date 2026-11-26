@@ -1,10 +1,13 @@
 """Esperados independentes; nenhuma fonte real de RH é utilizada."""
 from copy import deepcopy
+from datetime import date
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
+from app.models.referencias_salariais import ReferenciaSalarial
 from app.models.tabelas_salariais import HistoricoCalculo
 from app.schemas.progressao_eventos import PlanoProgressao
 from app.schemas.referencias_salariais import ReferenciaEntrada
@@ -53,8 +56,78 @@ def calculate(data, db):
     return calcular_progressao_eventos(PlanoProgressao.model_validate(data), db)
 
 
+def test_opcoes_docentes_respeitam_vigencia_e_perfil(auth_client_user, db_session):
+    seed(db_session, "DOCENTE")
+    primeiro, segundo = db_session.query(ReferenciaSalarial).order_by(ReferenciaSalarial.id).all()
+    primeiro.fim_vigencia = date(2024, 2, 29)
+    segundo.estado = "PENDENTE"
+    db_session.flush()
+    seed(db_session, "TAE")
+    url = "/api/tabelas/posicoes-docentes"
+    response = auth_client_user.get(url, params={"data_referencia": "2024-02-29"})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["total"] == 2
+    assert {r["titulacao"] for r in result["itens"]} == {"Mestrado", "Doutorado"}
+    assert all(r["posicao"] == DOCENTE for r in result["itens"])
+    assert all(r["fonte"] == "Tabela sintética confirmada" and r["vb"] == "2900.00" for r in result["itens"])
+    assert {r["titulacao"]: r["rt"] for r in result["itens"]} == {"Mestrado": "580.00", "Doutorado": "870.00"}
+    filtros = {"data_referencia": "2024-02-29", "carreira": DOCENTE["carreira"],
+               "classe_docente": "Adjunto", "nivel_docente": 1, "jornada": "40H", "vencimento_basico": "2900.00"}
+    assert auth_client_user.get(url, params=filtros).json()["itens"] == result["itens"]
+    for chave, outro in (("nivel_docente", 2), ("jornada", "DE"), ("vencimento_basico", "2900.01")):
+        assert auth_client_user.get(url, params={**filtros, chave: outro}).json()["total"] == 0
+    assert auth_client_user.get(url, params={"data_referencia": "2024-03-01"}).json()["itens"] == []
+    assert auth_client_user.get(url, params={"data_referencia": "2024-02-29", "pagina": 2}).json()["itens"] == []
+    assert auth_client_user.get("/api/tabelas/referencias").status_code == 403
+
+
 def correction(amount):
     return {"valor": amount, "fonte": "Memória sintética conferida", "localizador": "linha 1", "justificativa": "Base individual conferida pelo RH"}
+
+
+@pytest.mark.parametrize("classe,nova_classe,destino_jan,total", [
+    ("A", "A", 1, "250.00"),
+    ("C", "B", 2, "850.00"),
+])
+def test_correlacao_docente_dezembro_janeiro(db_session, classe, nova_classe, destino_jan, total):
+    data = plan("DOCENTE")
+    data["periodo"] = {"inicio": "2024-12-01", "ultimo_dia_considerado": "2025-01-31"}
+    data["eventos"] = [event("PROGRESSAO", "2024-12-01", posicao=position("DOCENTE", 2))]
+    for pos in (data["estado_inicial"]["posicao"], data["eventos"][0]["alteracoes"]["posicao"]):
+        pos.update(versao_carreira="MS até 2024", classe_docente=classe)
+    for versao, cl, nivel, inicio, fim, vb, rt in [
+        ("MS até 2024", classe, 1, "2024-01-01", "2024-12-31", "4000", "1000"),
+        ("MS até 2024", classe, 2, "2024-01-01", "2024-12-31", "4200", "1050"),
+        ("MS desde 2025", nova_classe, 1, "2025-01-01", None, "5000", "1200"),
+        ("MS desde 2025", "B", 2, "2025-01-01", None, "5500", "1300"),
+    ]:
+        ref = {**position("DOCENTE", nivel), "versao_carreira": versao, "classe_docente": cl,
+               "inicio_vigencia": inicio, "fim_vigencia": fim, "vencimento_basico": vb, "estado": "CONFIRMADA",
+               "retribuicoes": [{"titulacao": "Mestrado", "valor": rt}], "fonte": "Tabela sintética"}
+        salvar_referencia(db_session, ReferenciaEntrada.model_validate(ref), 1)
+    result = calculate(data, db_session)
+    dez, jan = result["segmentos"]
+    assert dez["estado"]["posicao"]["nivel_docente"] == 2
+    assert jan["estado"]["posicao"]["classe_docente"] == nova_classe
+    assert jan["estado"]["posicao"]["nivel_docente"] == destino_jan
+    assert sum(r["identificador"] == "CORRELACAO-MS-2025" for r in jan["referencias_regras"]) == 1
+    assert result["total_geral_a_receber"] == total
+    # A base individual de dezembro termina com o enquadramento antigo.
+    data["estado_inicial"]["vb_manual"] = correction("3900")
+    assert calculate(data, db_session)["total_geral_a_receber"] == format(Decimal(total) + 100, ".2f")
+    # Uma base conferida especificamente para janeiro continua válida na nova estrutura.
+    data["estado_inicial"].pop("vb_manual")
+    data["bases_mensais_origem"] = [{"id": mes, "competencia": mes, "vb": correction(valor),
+                                     "base_mensal_integral_confirmada": True}
+                                    for mes, valor in (("2024-12", "4000"), ("2025-01", "4800"))]
+    assert calculate(data, db_session)["total_geral_a_receber"] == format(Decimal(total) + 200, ".2f")
+    data["bases_mensais_origem"][1]["rt"] = correction("900")
+    assert calculate(data, db_session)["total_geral_a_receber"] == format(Decimal(total) + 500, ".2f")
+    db_session.query(ReferenciaSalarial).filter_by(inicio_vigencia=date(2025, 1, 1)).update({"estado": "PENDENTE"})
+    db_session.flush()
+    with pytest.raises(PendenciaApuracao, match="0 referências confirmadas.*MS desde 2025"):
+        calculate(data, db_session)
 
 
 def test_individual_vb_rt_corrections_keep_original_table_and_use_final_values(db_session):
@@ -297,6 +370,40 @@ def test_progression_pdf_retains_the_period_sources_and_final_amount(db_session,
     assert "REGRA-SINTETICA" in text
 
 
+def test_exporta_progressao_plurianual_salva_com_ficha_extensa(auth_client_user, db_session):
+    from io import BytesIO
+
+    import pdfplumber
+
+    seed(db_session, "DOCENTE")
+    data = plan("DOCENTE")
+    data["periodo"]["ultimo_dia_considerado"] = "2026-01-31"
+    campo = {"bloco_id": "B", "estado": "EXTRAIDO", "pagina": 1, "localizador": "Página 1"}
+    campos = [{**campo, "id": "M", "campo": "matricula", "valor": "123"}]
+    campos.extend({**campo, "id": f"F{i}", "campo": "observacao", "valor": "Exemplo sem uso no cálculo"}
+                  for i in range(700))
+    revisao = {"confirmado": True, "vinculo_calculo": "V1",
+               "documentos": [{"id": "D", "nome_arquivo": "ficha-sintetica.pdf", "layout": "FICHA_SIAPE",
+                               "situacao": "CONCLUIDO", "total_paginas": 1, "campos": campos,
+                               "blocos": [{"id": "B", "matricula": "123", "vinculo": "V1", "categoria": "DOCENTE", "paginas": [1]}]}],
+               "associacoes": [{"documento_id": "D", "bloco_id": "B", "pessoa": "SERVIDOR",
+                                "matricula": "123", "vinculo": "V1", "confirmado": True}],
+               "aplicacoes": [{"documento_id": "D", "campo_id": "M", "destino": ["matricula"], "valor_revisado": "123"}]}
+    saved = auth_client_user.post("/api/calcular", json={"tipo_calculo": "progressao", "dados_extraidos": {
+        "matricula": "123", "progressao": data, "revisao_extracao": revisao,
+    }})
+    assert saved.status_code == 200, saved.text
+    snapshot = saved.json()
+    pdf = auth_client_user.post("/api/exportar-pdf", json={"historico_id": snapshot["historico_id"]})
+    assert pdf.status_code == 200, pdf.text if pdf.status_code != 200 else ""
+    with pdfplumber.open(BytesIO(pdf.content)) as arquivo:
+        texto = "\n".join(p.extract_text() for p in arquivo.pages)
+    for esperado in ("2024-02", "2026-01", "ficha-sintetica.pdf", "REGRA-SINTETICA",
+                     snapshot["resultado_calculo"]["total_geral_a_receber"]):
+        assert esperado in texto
+    assert "Exemplo sem uso" not in texto
+
+
 @pytest.mark.parametrize("mutation", [
     lambda data: data.update(modalidade="DOCENTE"),
     lambda data: data["eventos"][1].update(tipo="RT"),
@@ -429,3 +536,79 @@ def test_monthly_confirmed_zero_is_not_replaced_by_table(db_session):
     data["bases_mensais_origem"][0]["vb"]["valor"] = "0"
     result = calculate(data, db_session)
     assert next(row for row in result["por_competencia"] if row["rubrica"] == "00001" and row["competencia"] == "2024-02")["devido"] == "3000.00"
+
+
+def test_progressao_docente_componentes_internos_preservam_valores_e_memoria(auth_client_user, db_session):
+    seed(db_session, "DOCENTE")
+    data = monthly_docente_plan()
+    for item in data["bases_mensais_origem"]:
+        item["rt"] = correction("580")
+    for row in data["rubricas"]:
+        row["rubrica"] = {"VB": "DIF-VB", "RT": "DIF-RT"}[row["formula"]]
+    response = auth_client_user.post("/api/calcular", json={"tipo_calculo": "progressao", "dados_extraidos": {"progressao": data}})
+    assert response.status_code == 200, response.text
+    result = response.json()["resultado_calculo"]
+    assert result["total_geral_a_receber"] == "4628.28"
+    assert {row["rubrica"] for row in result["por_competencia"]} == {"DIF-VB", "DIF-RT"}
+    data["rubricas"][0]["rubrica"] = "DIF-RT"
+    with pytest.raises(ValidationError, match="fórmula correspondente"):
+        PlanoProgressao.model_validate(data)
+
+
+def test_previa_e_memoria_comparam_folha_real_de_cada_mes(auth_client_user, db_session):
+    seed(db_session, "DOCENTE")
+    data = monthly_docente_plan()
+    data["periodo"]["ultimo_dia_considerado"] = "2024-04-30"
+    data["bases_mensais_origem"].append({"id": "abril", "competencia": "2024-04", "vb": correction("5800"),
+                                         "base_mensal_integral_confirmada": True})
+    for item, rt in zip(data["bases_mensais_origem"], ["580", "800", "1160"], strict=True):
+        item["rt"] = correction(rt)
+    for row in data["rubricas"]:
+        row["rubrica"] = "DIF-" + row["formula"]
+    response = auth_client_user.post("/api/calculos/progressao/previa-folha", json=data)
+    assert response.status_code == 200, response.text
+    linhas = response.json()["parcelas"]
+    assert [(r["componente"], r["diferenca"]) for r in linhas] == [
+        ("VB", "1448.28"), ("RT", "300.00"), ("VB", "2300.00"), ("RT", "360.00"), ("VB", "0.00"), ("RT", "0.00")]
+    assert linhas[3]["pago"] == "800.00" and linhas[3]["destino"] == "1160.00"
+    assert linhas[3]["fonte"] == "Tabela sintética confirmada"
+    assert db_session.query(HistoricoCalculo).count() == 0
+    assert calculate(data, db_session)["total_geral_a_receber"] == "4408.28"
+    data["bases_mensais_origem"][1]["rt"] = correction("580")
+    assert calculate(data, db_session)["total_geral_a_receber"] == "4628.28"
+    saved = auth_client_user.post("/api/calcular", json={"tipo_calculo": "progressao", "dados_extraidos": {"progressao": data}})
+    assert saved.status_code == 200, saved.text
+    exported = auth_client_user.post("/api/exportar-pdf", json={"historico_id": saved.json()["historico_id"]})
+    assert exported.status_code == 200
+    import io
+
+    import pdfplumber
+
+    with pdfplumber.open(io.BytesIO(exported.content)) as pdf:
+        text = " ".join(page.extract_text() or "" for page in pdf.pages)
+    assert "4628.28" in text and "destino mensal" in text and "pago mensal" in text
+    data["bases_mensais_origem"][1]["rt"] = correction("0")
+    assert calculate(data, db_session)["total_geral_a_receber"] == "5208.28"
+    del data["bases_mensais_origem"][1]["rt"]
+    with pytest.raises(PendenciaApuracao, match="RT paga em 2024-03"):
+        calculate(data, db_session)
+    data["bases_mensais_origem"] = []
+    with pytest.raises(PendenciaApuracao, match="cada competência"):
+        calculate(data, db_session)
+
+
+def test_sqlite_preserva_centavos_e_rejeita_fracao_indistinguivel(db_session):
+    from decimal import Decimal
+
+    entry = ReferenciaEntrada.model_validate({
+        **DOCENTE, "inicio_vigencia": "2026-04-01", "vencimento_basico": "12245.03",
+        "retribuicoes": [{"titulacao": "Exemplo", "valor": "10568.54"}],
+        "fonte": "Teste de representação decimal", "estado": "CONFIRMADA",
+    })
+    ref = salvar_referencia(db_session, entry, 1)
+    db_session.expire_all()
+    assert ref.vencimento_basico == Decimal("12245.03")
+    assert ref.retribuicoes[0].valor == Decimal("10568.54")
+    other = entry.model_copy(update={"nivel_docente": 2, "vencimento_basico": Decimal("12245.030000000001")})
+    with pytest.raises(ValueError, match="precisão do VB"):
+        salvar_referencia(db_session, other, 1)

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, SelectField, TextField } from './ui';
 import { reviewField } from '../utils/reviewFields';
-import { applyField, appendFinancialCandidate, appendVacation, suggestProgressionIdentification, object, fieldTargets, getAt } from '../utils/documentExtraction';
+import { applyField, appendFinancialCandidate, appendVacation, suggestProgressionIdentification, suggestProgressionOrder, object, fieldTargets, getAt } from '../utils/documentExtraction';
 import type { ExtractedDocument, ExtractedField, ExtractionReview as Review, Obj, Path } from '../utils/documentExtraction';
 
 const readerLabels: Record<string, string> = {
@@ -13,9 +13,10 @@ const readerLabels: Record<string, string> = {
   portaria_tae_anexo: 'Portaria de mérito TAE com anexo', ato_substituicao: 'Ato de substituição', nao_suportado: 'Formato não reconhecido',
 };
 
-export function ExtractionReview({ data, disabled, onChange }: { data: Obj; disabled: boolean; onChange: (path: Path, value: unknown) => void }) {
+export function ExtractionReview({ data, disabled, onChange, linkError }: { linkError?: string; data: Obj; disabled: boolean; onChange: (path: Path, value: unknown) => void }) {
   const review = data.revisao_extracao as Review;
   const identification = suggestProgressionIdentification(data);
+  const progressionOrder = suggestProgressionOrder(data);
   const [error, setError] = useState('');
   const [destinations, setDestinations] = useState<Record<string, string>>({});
   const [values, setValues] = useState<Record<string, string>>({});
@@ -49,7 +50,7 @@ export function ExtractionReview({ data, disabled, onChange }: { data: Obj; disa
     const targets = fieldTargets(data, doc, field);
     const selected = targets.find(path => JSON.stringify(path) === destinations[field.id]);
     const current = selected ? getAt(data, selected) : undefined;
-    const conflict = selected && ((current !== '' && current != null && String(current) !== (values[field.id] ?? field.valor)) || review.aplicacoes.some(a => JSON.stringify(a.destino) === JSON.stringify(selected)));
+    const conflict = selected && ((current !== '' && current != null && String(current) !== (values[field.id] ?? field.correcao?.valor ?? field.valor)) || review.aplicacoes.some(a => JSON.stringify(a.destino) === JSON.stringify(selected)));
     const association = review.associacoes.find(a => a.documento_id === doc.id && a.bloco_id === field.bloco_id);
     const ready = association?.confirmado && association.pessoa !== 'DESCARTADO';
     const fieldLabel = `campo ${doc.campos.findIndex(item => item.id === field.id) + 1} — ${doc.nome_arquivo}`;
@@ -66,21 +67,21 @@ export function ExtractionReview({ data, disabled, onChange }: { data: Obj; disa
       {field.inicio && <p>Programação: {field.inicio} a {field.fim ?? 'fim a confirmar'}. Não comprova gozo ou pagamento.</p>}
       {(field.fim_informado || field.fim_calculado) && <p className="help-text">Fim informado: {field.fim_informado ?? 'ausente ou ilegível'}; fim pelos dias: {field.fim_calculado ?? 'não calculável'}.</p>}
       {field.campo === 'periodo_ferias' && !field.fim && <SelectField label={`Fim escolhido para o ${fieldLabel}`} disabled={disabled || !ready} value={ends[field.id] ?? ''} onChange={e => setEnds({ ...ends, [field.id]: e.target.value })}><option value="">Confira e escolha um candidato</option>{field.fim_informado && <option value={field.fim_informado}>Fim informado: {field.fim_informado}</option>}{field.fim_calculado && field.fim_calculado !== field.fim_informado && <option value={field.fim_calculado}>Fim pelos dias: {field.fim_calculado}</option>}</SelectField>}
-      {(field.valor != null || (field.pagina != null && field.estado !== 'AUSENTE' && field.campo !== 'rubrica' && field.campo !== 'periodo_ferias')) && <>
+      {(field.correcao || field.valor != null || (field.pagina != null && field.estado !== 'AUSENTE' && field.campo !== 'rubrica' && field.campo !== 'periodo_ferias')) && <>
         {field.campo === 'rubrica' && <Button variant="secondary" disabled={disabled || !ready || applied || association?.pessoa === 'TITULAR'} onClick={() => run(() => appendFinancialCandidate(data, doc, field))}>Adicionar rubrica à revisão financeira</Button>}
         {field.campo === 'periodo_ferias' && data.substituicao != null && <Button variant="secondary" disabled={disabled || !ready || applied || field.cancelada === true || !field.inicio || (!field.fim && !ends[field.id])} onClick={() => run(() => appendVacation(data, doc, field, association?.pessoa === 'TITULAR', ends[field.id]))}>Adicionar período para conferir sua aplicação</Button>}
         <div className="form-grid">
           <SelectField label={`Destino do ${fieldLabel}`} value={destinations[field.id] ?? ''} disabled={disabled || !ready} onChange={e => setDestinations({ ...destinations, [field.id]: e.target.value })}>
             <option value="">Escolha o campo do formulário</option>{targets.map(path => <option key={JSON.stringify(path)} value={JSON.stringify(path)}>{path.slice(0, -1).filter(k => typeof k !== 'number').map(k => String(k).replaceAll('_', ' ')).join(' / ')} — {reviewField(path.at(-1)!, path).label}{path.some(k => typeof k === 'number') ? ` (item ${Number(path.find(k => typeof k === 'number')) + 1})` : ''}</option>)}
           </SelectField>
-          <TextField label={`Valor a aplicar no ${fieldLabel}`} disabled={disabled || !ready} value={values[field.id] ?? field.valor ?? ''} onChange={e => setValues({ ...values, [field.id]: e.target.value })} />
+          <TextField label={`Valor a aplicar no ${fieldLabel}`} disabled={disabled || !ready} value={values[field.id] ?? field.correcao?.valor ?? field.valor ?? ''} onChange={e => setValues({ ...values, [field.id]: e.target.value })} />
         </div>
         {conflict && <div className="space-y-2" role="group" aria-label={`Conflito no ${fieldLabel}`}>
           <p>Valor atual: {String(current ?? '')}. Sugestão da fonte: {field.valor ?? 'a revisar'}. Manter o valor atual não exige ação.</p>
           <TextField label={`Justificativa da substituição no ${fieldLabel}`} disabled={disabled || !ready} value={reasons[field.id] ?? ''} onChange={e => setReasons({ ...reasons, [field.id]: e.target.value })} />
-          <Button variant="secondary" disabled={disabled || !ready || !reasons[field.id]?.trim() || !(values[field.id] ?? field.valor)} onClick={() => run(() => applyField(data, doc, field, selected!, values[field.id] ?? field.valor ?? '', reasons[field.id], true))}>Substituir valor ou fonte após conferência</Button>
+          <Button variant="secondary" disabled={disabled || !ready || !reasons[field.id]?.trim() || !(values[field.id] ?? field.correcao?.valor ?? field.valor)} onClick={() => run(() => applyField(data, doc, field, selected!, values[field.id] ?? field.correcao?.valor ?? field.valor ?? '', reasons[field.id], true))}>Substituir valor ou fonte após conferência</Button>
         </div>}
-        <Button variant="quiet" disabled={disabled || !ready || !!conflict || !targets.some(path => JSON.stringify(path) === destinations[field.id]) || !(values[field.id] ?? field.valor)} onClick={() => run(() => applyField(data, doc, field, JSON.parse(destinations[field.id]), values[field.id] ?? field.valor ?? ''))}>Aplicar ao campo escolhido</Button>
+        <Button variant="quiet" disabled={disabled || !ready || !!conflict || !targets.some(path => JSON.stringify(path) === destinations[field.id]) || !(values[field.id] ?? field.correcao?.valor ?? field.valor)} onClick={() => run(() => applyField(data, doc, field, JSON.parse(destinations[field.id]), values[field.id] ?? field.correcao?.valor ?? field.valor ?? ''))}>Aplicar ao campo escolhido</Button>
       </>}
     </div>;
   };
@@ -89,9 +90,10 @@ export function ExtractionReview({ data, disabled, onChange }: { data: Obj; disa
     <p className="help-text">Confira a pessoa e o vínculo de cada documento antes de usar os valores.</p>
     <details className="text-sm"><summary>Orientações de conferência</summary><p className="help-text mt-2">Campos ausentes podem ser preenchidos manualmente. Portarias são opcionais e limitadas aos formatos suportados. Confira separadamente publicação, data do ato e efeitos financeiros. Rubricas observadas não confirmam concessão nem quitação.</p>{data.progressao != null && <p className="help-text mt-2">Nome e matrícula podem ser sugeridos pela ficha. Complete datas, posição e parcelas com a ata e as referências conferidas; sugestões não confirmam a revisão.</p>}</details>
     {identification !== data && <Button variant="secondary" disabled={disabled} onClick={() => onChange([], identification)}>Preencher identificação a partir da ficha</Button>}
+    {progressionOrder !== data && <Button variant="secondary" disabled={disabled} onClick={() => onChange([], progressionOrder)}>Usar sugestões da portaria de progressão</Button>}
     {error && <p role="alert">{error}</p>}
     {!!review.historico_aplicacoes?.length && <details><summary>Histórico de fontes substituídas</summary>{review.historico_aplicacoes.map((item, index) => <p key={index}>{review.documentos.find(doc => doc.id === item.documento_id)?.nome_arquivo} · {item.destino.join(' / ')} · valor anterior aplicado: {item.valor_revisado}</p>)}</details>}
-    <TextField label="Vínculo ou contrato deste cálculo" disabled={disabled} value={review.vinculo_calculo} onChange={e => change(['vinculo_calculo'], e.target.value)} />
+    <TextField label="Vínculo ou contrato deste cálculo" error={linkError} disabled={disabled} value={review.vinculo_calculo} onChange={e => change(['vinculo_calculo'], e.target.value)} />
     {data.substituicao != null && <TextField label="Vínculo do titular" disabled={disabled} value={review.vinculo_titular} onChange={e => change(['vinculo_titular'], e.target.value)} />}
     {review.documentos.map(doc => <details key={doc.id} open className="border-t border-outline py-4 min-w-0">
       <summary className="font-medium break-words">{doc.nome_arquivo}<span className="block help-text">{doc.total_paginas} páginas · {({ CONCLUIDO: 'Leitura concluída', PARCIAL: 'Leitura parcial — confira as pendências', SEM_TEXTO: 'Sem texto para extrair — preencha manualmente', NAO_SUPORTADO: 'Formato sem leitor — preencha manualmente' })[doc.situacao]}</span></summary>

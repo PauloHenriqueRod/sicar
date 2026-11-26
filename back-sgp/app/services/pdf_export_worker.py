@@ -15,11 +15,16 @@ def main():
         print(json.dumps({"status": "unavailable"}))
         return
     from app.services.pdf_report_limits import (
-        MAX_REPORT_PAYLOAD_BYTES, PDFReportLimitError, UnsupportedPDFCharacterError,
+        MAX_REPORT_PAYLOAD_BYTES,
+        PDFReportLimitError,
+        UnsupportedPDFCharacterError,
     )
     try:
         from app.services.gerador_pdf import GeradorPDF
-
+    except ImportError:
+        print(json.dumps({"status": "missing_dependencies"}))
+        return
+    try:
         raw = sys.stdin.buffer.read(MAX_REPORT_PAYLOAD_BYTES + 1)
         if len(raw) > MAX_REPORT_PAYLOAD_BYTES:
             raise PDFReportLimitError()

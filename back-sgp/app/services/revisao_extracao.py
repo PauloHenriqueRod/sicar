@@ -99,6 +99,13 @@ def validar_revisao_extracao(data):
         if not association or association.pessoa == "DESCARTADO":
             _pending("Campo aplicado a partir de bloco descartado ou não associado.")
         path = tuple(application.destino)
+        inicio_progressao = (
+            path == ("progressao", "periodo", "inicio")
+            and field.leitor_id == "portaria_docente_progressao"
+            and field.campo == "efeitos_financeiros"
+        )
+        if field.campo == "modalidade_progressao" and path != ("progressao", "modalidade"):
+            _pending("A modalidade observada exige o campo de modalidade da progressão.")
         semantic_targets = {
             "nome": {"nome"},
             "matricula": {"matricula", "titular_matricula"},
@@ -117,6 +124,7 @@ def validar_revisao_extracao(data):
         if (
             field.campo in semantic_targets
             and str(path[-1]) not in semantic_targets[field.campo]
+            and not inicio_progressao
         ):
             _pending(
                 "Destino incompatível com a data ou função explicitamente observada no ato."
@@ -190,6 +198,14 @@ def validar_revisao_extracao(data):
                 )
         except (KeyError, IndexError, TypeError, ValueError):
             _pending("Destino do dado extraído não existe no formulário final.")
+        if path[:2] == ("progressao", "bases_mensais_origem"):
+            if len(path) != 5 or not isinstance(path[2], int) or path[3] not in ("vb", "rt") or path[4] != "valor":
+                _pending("Associe a rubrica ao valor mensal de VB ou RT.")
+            base = values["progressao"]["bases_mensais_origem"][path[2]]
+            codigo = "00001" if path[3] == "vb" else "82606"
+            if (field.campo != "rubrica" or field.rubrica != codigo or field.competencia != base["competencia"]
+                or field.natureza != "R" or field.sequencia != "0"):
+                _pending("A competência, a rubrica e a natureza da folha precisam corresponder à base mensal vinculada.")
         if current is None or isinstance(current, (dict, list, bool)):
             _pending("O destino precisa ser um campo preenchido do cálculo.")
         revised = application.valor_revisado

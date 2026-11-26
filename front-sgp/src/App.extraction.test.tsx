@@ -21,10 +21,10 @@ it.each(['NOME REVISADO', ''])('preenche a identificação inequívoca da ficha 
   fireEvent.click(screen.getByRole('button', { name: 'Continuar para revisão' }));
   await waitFor(() => expect(screen.getByLabelText('Nome do servidor')).toHaveValue('ALFA'));
   expect(screen.getByLabelText('Matrícula SIAPE')).toHaveValue('999');
-  expect(screen.getByLabelText('Modalidade da progressão')).toHaveValue('');
+  expect(screen.queryByLabelText('Modalidade da progressão')).toBeNull();
   expect(screen.getByLabelText('Início da apuração')).toHaveValue('');
   expect(screen.getByRole('button', { name: 'Confirmar e Calcular' })).toBeDisabled();
-  expect(screen.getByText('Valores aplicados e correções')).toBeVisible();
+  expect(screen.queryByText('Valores aplicados e correções')).toBeNull();
   fireEvent.change(screen.getByLabelText('Nome do servidor'), { target: { value: revisedName } });
   fireEvent.click(screen.getByText('Adicionar ou repetir documentos'));
   fireEvent.change(screen.getByLabelText('Selecionar PDFs — Ficha Financeira'), { target: { files: [file] } });
@@ -32,6 +32,35 @@ it.each(['NOME REVISADO', ''])('preenche a identificação inequívoca da ficha 
   await waitFor(() => expect(screen.getByLabelText('Selecionar PDFs — Ficha Financeira')).not.toBeDisabled());
   expect(screen.getByLabelText('Nome do servidor')).toHaveValue(revisedName);
   expect(screen.getByLabelText('Matrícula SIAPE')).toHaveValue('999');
+});
+
+it('sugere modalidade docente e início pelos efeitos da portaria que corresponde à ficha', async () => {
+  const beneficiary = { id: 'B', matricula: '9900123', nome: 'HELENA EXEMPLO DOCENTE', categoria: 'DOCENTE', paginas: [1] };
+  const fact = (campo: string, valor: string) => ({ id: campo, bloco_id: 'B', campo, valor, pagina: 1, estado: 'EXTRAIDO', localizador: 'Página 1' });
+  const financial = { ...doc, id: 'FIN', layout: 'FICHA_SIAPE', blocos: [beneficiary], campos: [fact('nome', beneficiary.nome), fact('matricula', beneficiary.matricula)] };
+  const order = { ...doc, id: 'ATO', nome_arquivo: 'portaria.pdf', impressao: 'b'.repeat(64), layout: 'PORTARIA_UFPI_DOCENTE', situacao: 'PARCIAL',
+    blocos: [{ ...beneficiary, matricula: null, papel_documental: 'SERVIDOR' }], campos: [
+      fact('nome', beneficiary.nome), fact('data_documento', '2024-03-08'), fact('efeitos_financeiros', '2024-02-15'), fact('modalidade_progressao', 'DOCENTE'), fact('classe_origem', 'A'), fact('nivel_origem', '1'), fact('classe_destino', 'B'), fact('nivel_destino', '2'),
+    ].map(f => ({ ...f, leitor_id: 'portaria_docente_progressao' })) };
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL) => String(url).includes('/extrair-pdf')
+    ? json({ versao_contrato: 2, resultados: [financial, order].map(extracao => ({ filename: extracao.nome_arquivo, extracao })), falhas: [] })
+    : json({ total_calculos: 0, total_usuarios: 1, calculos_por_tipo: {}, ultimos_calculos: [] })));
+  render(<App />);
+  fireEvent.click(screen.getByRole('button', { name: 'Cálculos' }));
+  fireEvent.change(screen.getByLabelText('Tipo de cálculo'), { target: { value: 'progressao' } });
+  for (const [section, name] of [['Ficha Financeira', 'ficha.pdf'], ['Ato ou portaria de progressão e IQ/RT', 'portaria.pdf']]) {
+    fireEvent.change(screen.getByLabelText('Selecionar PDFs — ' + section), { target: { files: [new File(['PDF'], name)] } });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Continuar para revisão' }));
+  await waitFor(() => expect(screen.getByLabelText('Início da apuração')).toHaveValue('2024-02-15'));
+  const origin = screen.getByText('Classe A · nível 1');
+  expect(origin).toBeVisible();
+  expect(origin.compareDocumentPosition(screen.getByLabelText('Nova classe')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getByLabelText('Matrícula SIAPE')).toHaveValue('9900123');
+  expect(screen.getByLabelText('Nova classe')).toHaveValue('B');
+  expect(screen.getByLabelText('Novo nível')).toHaveValue(2);
+  expect(screen.getByLabelText('Início dos efeitos financeiros')).toHaveValue('2024-02-15');
+  expect(screen.getByRole('button', { name: 'Confirmar e Calcular' })).toBeDisabled();
 });
 
 it('envia fontes de seções diferentes para uma única revisão sem aplicar identidades automaticamente', async () => {

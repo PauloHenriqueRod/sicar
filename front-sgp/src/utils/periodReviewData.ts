@@ -25,7 +25,7 @@ export function serializePeriodPlan(value: unknown): unknown {
     if (Array.isArray(item)) return item.map(value => visit(value));
     if (item && typeof item === 'object') {
       if (key === 'posicao') return serializeSalaryPosition(item as SalaryPosition);
-      return Object.fromEntries(Object.entries(item).filter(([, v]) => v !== '').map(([k, v]) => [k, visit(v, k)]));
+      return Object.fromEntries(Object.entries(item).filter(([k, v]) => v !== '' && k !== 'origem_automatica').map(([k, v]) => [k, visit(v, k)]));
     }
     if (typeof item === 'string' && (key === 'valor' || key === 'percentual' || key.startsWith('percentual_'))) {
       const text = item.trim();

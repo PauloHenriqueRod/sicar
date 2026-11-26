@@ -135,7 +135,7 @@ class GeradorPDF:
             pdf.set_font(FONT_FAMILY, 'B', 9)
             linhas_rotulo = pdf.multi_cell(largura, 5, rotulo, dry_run=True, output=MethodReturnValue.LINES)
             pdf.set_font(FONT_FAMILY, '', 10)
-            contador = chave.endswith("_id") or chave.startswith(("exercicio", "dias_", "meses_", "ano", "percentual_", "quantidade_", "avos_")) or chave in {"multiplicador", "id", "referencia_id", "nivel_docente", "padrao_tae", "nivel", "avos", "segmento_base"}
+            contador = chave.endswith("_id") or chave.startswith(("exercicio", "dias_", "meses_", "ano", "percentual_", "quantidade_", "avos_")) or chave in {"multiplicador", "id", "versao_snapshot", "referencia_id", "nivel_docente", "padrao_tae", "nivel", "avos", "segmento_base"}
             if isinstance(valor, (float, int)) and not isinstance(valor, bool) and not contador:
                 # A apresentação segue a regra monetária sem alterar os valores do histórico.
                 decimal_value = Decimal(str(valor))

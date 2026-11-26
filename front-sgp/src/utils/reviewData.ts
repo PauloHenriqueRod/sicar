@@ -9,6 +9,8 @@ import { emptySubstitutionPlan } from './substitutionReview';
 import { emptyAbonoPlan, serializeAbonoPlan } from './abonoReview';
 import { emptyRescisaoPlan, serializeRescisaoPlan } from './rescisaoReview';
 import { emptyExerciciosPlan, serializeExerciciosPlan } from './exerciciosReview';
+import { isMonthlyProgression, prepareDocentePlan, reviewedPayrollMonths, singleDocenteReview } from './progressionReviewValidation';
+import { missingPayroll, payrollPayload } from './docentePayroll';
 
 const fieldsByCalculation: Record<TipoCalculo, Record<string, unknown>> = {
   apuracao_periodos: { nome: '', matricula: '', apuracao: emptyPeriodPlan() },
@@ -69,6 +71,18 @@ export function parseReviewNumber(value: unknown, integer = false): number {
 }
 
 export function serializeReviewData(data: Record<string, unknown>): Record<string, unknown> {
+  if (isMonthlyProgression(data)) {
+    const review = data.revisao_extracao ? singleDocenteReview(data) : undefined;
+    const months = reviewedPayrollMonths(data);
+    const missing = missingPayroll(months);
+    if (missing) throw new Error(missing);
+    const plan = prepareDocentePlan(data);
+    const { rows, applications } = payrollPayload(months, plan.conferido_pelo_rh === true);
+    data = { ...data, progressao: { ...plan, bases_mensais_origem: rows } };
+    if (review) data.revisao_extracao = { ...review, aplicacoes: [
+      ...review.aplicacoes.filter(a => !(a.destino[0] === 'progressao' && a.destino[1] === 'bases_mensais_origem')), ...applications,
+    ] };
+  }
   if (Object.hasOwn(data, 'insalubridade') && (data.insalubridade == null || String(data.insalubridade).trim() === '')) {
     throw new Error('Confira o percentual de insalubridade e informe um valor, inclusive zero quando não houver adicional.');
   }
@@ -80,6 +94,7 @@ export function serializeReviewData(data: Record<string, unknown>): Record<strin
     if (value && typeof value === 'object') {
       return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
         const nextPath = [...path, key];
+        if (nextPath.length === 1 && ['revisao_docente_detalhada', 'edicoes_folha_docente'].includes(key)) return [];
         if (nextPath.length === 1 && key === 'revisao_extracao') return [[key, structuredClone(item)]];
         if (nextPath.length === 1 && key === 'apuracao') return [[key, serializePeriodPlan(item)]];
         if (nextPath.length === 1 && key === 'substituicao') return [[key, serializePeriodPlan(item)]];

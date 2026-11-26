@@ -14,11 +14,11 @@ const appearance = {
   error: { icon: CircleAlert, classes: 'feedback-error' },
 };
 
-export function ActionFeedback({ feedback }: { feedback: Feedback | null }) {
+export function ActionFeedback({ feedback, inline = false }: { feedback: Feedback | null; inline?: boolean }) {
   const style = feedback ? appearance[feedback.tone] : null;
   const Icon = style?.icon;
   return (
-    <div role={feedback?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true" className={style ? `sticky top-0 z-20 flex w-full items-start gap-3 rounded-lg border p-4 ${style.classes}` : 'sr-only'}>
+    <div role={feedback?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true" className={style ? `${inline ? '' : 'sticky top-0 z-20'} flex w-full items-start gap-3 rounded-lg border p-4 ${style.classes}` : 'sr-only'}>
       {feedback && Icon && <>
         <Icon aria-hidden="true" className={`mt-0.5 h-5 w-5 shrink-0 ${feedback.tone === 'loading' ? 'animate-spin motion-reduce:animate-none' : ''}`} />
         <div className="min-w-0">

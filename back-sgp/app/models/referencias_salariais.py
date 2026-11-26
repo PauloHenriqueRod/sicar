@@ -24,6 +24,27 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
+class _ValorSalarialSQLite(Numeric):
+    """Lê centavos a partir da representação decimal curta do REAL do SQLite."""
+
+    cache_ok = True
+
+    def result_processor(self, dialect, coltype):
+        process = super().result_processor(dialect, coltype)
+
+        def read(value):
+            if isinstance(value, float):
+                canonical = Decimal(str(value))
+                if canonical.as_tuple().exponent >= -2:
+                    return canonical.quantize(Decimal("0.000000000001"))
+            return process(value) if process else value
+
+        return read
+
+
+valor_salarial = Numeric(30, 12).with_variant(_ValorSalarialSQLite(30, 12), "sqlite")
+
+
 class EstruturaRemuneratoria(Base):
     __tablename__ = "estrutura_remuneratoria"
     __table_args__ = (
@@ -89,7 +110,7 @@ class ReferenciaSalarial(Base):
     )
     inicio_vigencia: Mapped[date] = mapped_column(Date, nullable=False)
     fim_vigencia: Mapped[date | None] = mapped_column(Date)
-    vencimento_basico: Mapped[Decimal] = mapped_column(Numeric(30, 12), nullable=False)
+    vencimento_basico: Mapped[Decimal] = mapped_column(valor_salarial, nullable=False)
     estado: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDENTE")
     fonte: Mapped[str] = mapped_column(String(500), nullable=False)
     conferido_por: Mapped[int | None] = mapped_column(Integer)
@@ -116,7 +137,7 @@ class RetribuicaoReferencia(Base):
     )
     titulacao: Mapped[str] = mapped_column(String(100), nullable=False)
     titulacao_chave: Mapped[str] = mapped_column(String(100), nullable=False)
-    valor: Mapped[Decimal] = mapped_column(Numeric(30, 12), nullable=False)
+    valor: Mapped[Decimal] = mapped_column(valor_salarial, nullable=False)
 
 
 class PendenciaSalarialLegada(Base):
